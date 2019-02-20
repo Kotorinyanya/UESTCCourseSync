@@ -7,7 +7,7 @@ import icalendar
 import datetime
 import pytz
 import hashlib
-import getpass
+import browsercookie
 
 logging.basicConfig()  # init a basic output in terminal
 s = requests.session()
@@ -32,6 +32,7 @@ CLASS = {
 
 def md5(s):
     return hashlib.md5(s.encode('UTF')).hexdigest()
+
 
 
 class APIError(Exception):
@@ -77,8 +78,7 @@ class UESTC:
         self.s = requests.session()
         self.s.headers.setdefault('Content-Language', 'zh_CN')
         self.s.headers.setdefault('X-Requested-With', 'XMLHttpRequest')
-        self.s.headers.setdefault('User-Agent',
-                                  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.22 Safari/537.36')
+        self.s.headers.setdefault('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.22 Safari/537.36')
         self.logger = logging.getLogger('UESTC API')
         self.logger.setLevel(logging.DEBUG)
 
@@ -88,8 +88,7 @@ class UESTC:
 
     def getToken(self):
         self.logger.info('生成跳转网址...')
-        html = self.s.get("http://idas.uestc.edu.cn/authserver/login",
-                          params={'service': 'http://portal.uestc.edu.cn/login.portal'}).text
+        html = self.s.get("http://idas.uestc.edu.cn/authserver/login", params={'service': 'http://portal.uestc.edu.cn/login.portal'}).text
         try:
             token = pq(html)("input[name=lt]").attr("value")
             self.logger.debug('Jump Token: %s', token)
@@ -99,31 +98,44 @@ class UESTC:
             self.logger.debug('returned data: \n%s', html)
             raise APIError
 
+    def login_with_browser(self):
+        logging.info("Try loading Chrome Cookie")
+        cookies = browsercookie.chrome()
+        for i in cookies:
+            i.expires = None
+        self.s.cookies = cookies
+        if "欢迎您" in self.s.get("http://portal.uestc.edu.cn/").text:
+            self.logger.info("login success")
+            return True
+        else:
+            self.logger.info("login failed")
+            return False
+
+
     def login(self):
-        # if not self.login_with_browser():
-        username = input("学号:")
-        password = getpass.getpass("密码:")
-        if not self.login_with_password(username, password):
-            self.logger.error("Failed")
+        if not self.login_with_browser():
+            # username = input("学号:")
+            # password = getpass.getpass("密码:")
+            # if not self.login_with_password(username, password):
+            self.logger.error("Failed to login with chrome cookies")
             raise APIError
+
 
     def login_with_password(self, username, password):
         self.logger.info('开始登陆...')
         token = self.getToken()
 
-        ret = self.s.post("http://idas.uestc.edu.cn/authserver/login",
-                          params={'service': 'http://portal.uestc.edu.cn/login.portal'}, data={
-                "username": username,
-                "password": password,
-                "dllt": "userNamePasswordLogin",
-                "rmShown": 1,
-                "lt": token,
-                "execution": "e1s1",
-                "_eventId": "submit"
-            })
+        ret = self.s.post("http://idas.uestc.edu.cn/authserver/login", params={'service': 'http://portal.uestc.edu.cn/login.portal'}, data={
+            "username": username,
+            "password": password,
+            "dllt": "userNamePasswordLogin",
+            "rmShown": 1,
+            "lt": token,
+            "execution": "e1s1",
+            "_eventId": "submit"
+        })
         if ret.url.startswith("http://portal.uestc.edu.cn/index.portal"):
             self.logger.info('登陆成功')
-            return True
         else:
             reason = pq(ret.text)('.AlrtErrTxt').text()
             self.logger.critical('登录失败: %s', reason)
@@ -167,8 +179,7 @@ class UESTC:
             temp = json.loads('[' + re.search(r"(?<=TaskActivity\().+?(?=\);)", text).group() + "]")
             basicData = Course(temp)
             for i in re.findall(r'(\d+)(\*unitCount\+)(\d+);', text):
-                basicData.time.append(
-                    {"weekday": int(i[0]), "time": [int(i[2])], "week": temp[-1], "location": temp[5]})
+                basicData.time.append({"weekday": int(i[0]), "time": [int(i[2])], "week": temp[-1], "location": temp[5]})
             return basicData
 
         if term_id not in self.courses:
@@ -182,8 +193,7 @@ class UESTC:
                 "Accept-Language": "zh-CN,zh;q=0.8"
             }).text
             # Strip the html code and get the js code
-            courses = [parseCourse(i[0]) for i in
-                       re.findall(r'(activity\s=\s.*(\s+\bindex[\s\S]*?activity;)+)', source)]
+            courses = [parseCourse(i[0]) for i in re.findall(r'(activity\s=\s.*(\s+\bindex[\s\S]*?activity;)+)', source)]
             # merge the same course
             _courses = {}
             for i in courses:
@@ -230,15 +240,12 @@ class UESTC:
                 for t in i.time:
                     for n, w in enumerate(t['week'][1:]):
                         if int(w):
-                            targetTime = datetime.timedelta(days=7 * n + t['weekday']) + the_first_day + CLASS[
-                                min(t['time'])]
-                            targetEndTime = datetime.timedelta(days=7 * n + t['weekday'], minutes=45) + the_first_day + \
-                                            CLASS[max(t['time'])]
+                            targetTime = datetime.timedelta(days=7*n + t['weekday']) + the_first_day + CLASS[min(t['time'])]
+                            targetEndTime = datetime.timedelta(days=7*n + t['weekday'], minutes=45) + the_first_day + CLASS[max(t['time'])]
                             e = icalendar.Event()
                             e.add('dtstart', tz.localize(targetTime))
                             e.add('dtend', tz.localize(targetEndTime))
-                            e['summary'] = "{} {} {}".format(i.name.split('(')[0],
-                                                             i.teacher + "老师" if i.teacher else "", t['location'])
+                            e['summary'] = "{} {} {}".format(i.name.split('(')[0], i.teacher + "老师" if i.teacher else "", t['location'])
                             e['location'] = icalendar.vText(t['location'])
                             # e['SEQUENCE'] = 1
                             e['TRANSP'] = icalendar.vText('OPAQUE')
@@ -253,6 +260,7 @@ class UESTC:
 
 
 def sync():
+    import getpass
     print(r"""
  ___  ___  _______   ________  _________  ________
 |\  \|\  \|\  ___ \ |\   ____\|\___   ___\\   ____\
@@ -265,7 +273,7 @@ def sync():
   """)
 
     u = UESTC()
-
+    
     u.login()
     u.getSemester()
     for i in u.terms:
@@ -278,7 +286,6 @@ def sync():
     with open(u.getName() + '.ics', 'wb') as fp:
         fp.write(u.genTable(semsterId, day).to_ical())
     print('成功导出！')
-
 
 if __name__ == "__main__":
     sync()
